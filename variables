@@ -1,0 +1,70 @@
+OPENAI_API_KEY = "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"
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.json
+    thread_id = data.get("thread_id")
+    user_message = f"Current Date: {datetime.datetime.now().strftime('%B %d, %Y')}\n" + data.get('message', '')
+
+    if not user_message:
+        return jsonify({"error": "Message is required"}), 400
+
+    # ✅ أول مرة: مفيش thread_id → لازم client_info
+    if not thread_id:
+        client_info = data.get("client_info")
+        if not client_info or not client_info.get("user_id"):
+            return jsonify({"error": "Client info is missing or incomplete"}), 400
+
+        # إنشاء thread جديد
+        thread = client.beta.threads.create()
+        thread_id = thread.id
+        logging.info(f"🧵 New thread created: {thread_id}")
+        save_session(thread_id, client_info)
+
+    else:
+        # ✅ بعد كده: نستخدم بيانات العميل من الجلسة
+        client_info = get_session(thread_id)
+        if not client_info:
+            return jsonify({"error": "Session expired or client info missing for this thread_id"}), 400
+
+    user_id = client_info["user_id"]
+
+    # ✅ استخراج التفضيلات من الرسالة
+    extracted_info = functions.extract_client_preferences(user_message)
+
+    # ✅ إنشاء / تحديث lead
+    lead_data = {
+        "user_id": user_id,
+        "name": client_info.get("name", ""),
+        "phone": client_info.get("phone", ""),
+        "email": client_info.get("email", ""),
+        **extracted_info
+    }
+    functions.create_lead(lead_data)
+
+    # ✅ تسجيل رسالة المستخدم
+    functions.log_conversation_to_db(thread_id, user_id, user_message)
+
+    # ✅ إرسال الرسالة للمساعد
+    client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=user_message
+    )
+
+    # ✅ تشغيل المساعد
+    run = client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=assistant_id
+    )
+
+    # ✅ تنفيذ الأدوات
+    core_functions.process_tool_calls(client, thread_id, run.id)
+
+    # ✅ استلام الرد
+    messages = client.beta.threads.messages.list(thread_id=thread_id)
+    last_message = messages.data[0].content[0].text.value if messages.data else "❌ لم يتم استلام رد من المساعد."
+
+    # ✅ تسجيل رد المساعد
+    functions.log_conversation_to_db(thread_id, "bot", last_message)
+
+    return jsonify({"response": last_message, "thread_id": thread_id})

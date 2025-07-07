@@ -1,0 +1,7 @@
+Flask
+gunicorn
+openai
+mysql-connector-python
+packaging
+requests
+loguru
